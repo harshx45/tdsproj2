@@ -1,109 +1,168 @@
 import os
-import sys
 import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
 import seaborn as sns
-import openai
-from tenacity import retry, stop_after_attempt, wait_fixed
+import matplotlib.pyplot as plt
+import requests
+import json
+import seaborn
+import httpx
+import numpy as np  # Importing numpy
+from tabulate import tabulate  # Importing tabulate for table formatting
+from scipy import stats  # Importing scipy for any advanced statistical functions
+from datetime import datetime 
 
-# Load API key from environment variable
-API_KEY = os.environ.get("AIPROXY_TOKEN")
-if not API_KEY:
-    print("Error: AIPROXY_TOKEN environment variable not set.")
-    sys.exit(1)
 
-openai.api_key = API_KEY
+# Prompt the user for their API token and the folder location
+# Hardcode the API token and folder path
+api_proxy_token = "Token"
+folder_path = r"paTH"
 
-@retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
-def call_llm(prompt, model="gpt-4o-mini"):
+
+
+api_proxy_base_url = "https://aiproxy.sanand.workers.dev/openai/v1"
+
+def read_csv(filename):
+    """Read the CSV file and return a DataFrame."""
     try:
-        response = openai.ChatCompletion.create(
-            model=model,
-            messages=[{"role": "system", "content": "You are an expert data analyst."},
-                      {"role": "user", "content": prompt}]
-        )
-        return response['choices'][0]['message']['content']
+        df = pd.read_csv(filename, encoding="utf-8")
+        print(f"Dataset loaded: {filename}")
+        return df
+    except UnicodeDecodeError:
+        print(f"Encoding issue detected with {filename}. Trying 'latin1'.")
+        return pd.read_csv(filename, encoding="latin1")
     except Exception as e:
-        print(f"Error during LLM call: {e}")
-        raise
+        print(f"Error loading {filename}: {e}")
+        exit()
 
-# Helper functions for visualization
-def save_correlation_heatmap(df, output_file):
-    plt.figure(figsize=(10, 8))
-    corr = df.corr(numeric_only=True)
-    sns.heatmap(corr, annot=True, fmt=".2f", cmap="coolwarm")
-    plt.title("Correlation Matrix")
-    plt.savefig(output_file)
-    plt.close()
+def analyze_data(df):
+    """Perform basic analysis on the dataset."""
+    analysis = {
+        "shape": df.shape,
+        "columns": df.columns.tolist(),
+        "missing_values": df.isnull().sum().to_dict(),
+        "summary_statistics": df.describe(include="all").to_dict()
+    }
+    return analysis
 
-def save_histograms(df, output_prefix):
-    for column in df.select_dtypes(include=np.number).columns:
-        plt.figure()
-        sns.histplot(df[column].dropna(), kde=True, bins=30, color="blue")
-        plt.title(f"Distribution of {column}")
-        plt.xlabel(column)
-        plt.ylabel("Frequency")
-        output_file = f"{output_prefix}_{column}.png"
-        plt.savefig(output_file)
+def visualize_data(df, output_prefix):
+    """Generate visualizations for the dataset."""
+    charts = []
+    
+    # Example 1: Correlation Heatmap (if numeric data exists)
+    numeric_columns = df.select_dtypes(include=["number"]).columns
+    if len(numeric_columns) > 0:
+        plt.figure(figsize=(14, 12))  # Increased figure size for clarity
+        heatmap = sns.heatmap(
+            df[numeric_columns].corr(), 
+            annot=True, 
+            cmap="coolwarm", 
+            fmt=".2f", 
+            cbar_kws={'shrink': 0.8}
+        )
+        heatmap.set_title("Correlation Heatmap", fontsize=16, pad=20)
+        heatmap.set_xlabel("Features", fontsize=14, labelpad=20)
+        heatmap.set_ylabel("Features", fontsize=14, labelpad=20)
+        plt.xticks(fontsize=12, rotation=45, ha="right")  # Rotate and align x-axis labels
+        plt.yticks(fontsize=12)
+        plt.tight_layout(pad=3.0)  # Adjust layout
+        heatmap_file = f"{output_prefix}_heatmap.png"
+        plt.savefig(heatmap_file, dpi=300)  # Save high-resolution image
+        charts.append(heatmap_file)
         plt.close()
 
-# Process the dataset and generate analysis and visualizations
-def analyze_dataset(filename):
-    try:
-        df = pd.read_csv(filename)
-    except Exception as e:
-        print(f"Error loading file {filename}: {e}")
-        sys.exit(1)
+    # Example 2: Bar Plot for the first categorical column
+    categorical_columns = df.select_dtypes(include=["object"]).columns
+    if len(categorical_columns) > 0:
+        plt.figure(figsize=(14, 8))  # Increased figure size
+        top_categories = df[categorical_columns[0]].value_counts().head(10)
+        top_categories.sort_values().plot(kind="barh", color="skyblue")  # Horizontal bar plot
+        plt.title(f"Top 10 {categorical_columns[0]} Categories", fontsize=16, pad=20)
+        plt.xlabel("Frequency", fontsize=14, labelpad=15)
+        plt.ylabel(categorical_columns[0], fontsize=14, labelpad=15)
+        plt.xticks(fontsize=12)
+        plt.yticks(fontsize=12)
+        plt.tight_layout(pad=3.0)  # Adjust layout
+        barplot_file = f"{output_prefix}_barplot.png"
+        plt.savefig(barplot_file, dpi=300)
+        charts.append(barplot_file)
+        plt.close()
 
-    # Basic statistics
-    basic_stats = df.describe(include="all").to_string()
-    missing_values = df.isnull().sum().to_string()
-    unique_values = df.nunique().to_string()
+    return charts
 
-    # Save visualizations
-    save_correlation_heatmap(df, "correlation_heatmap.png")
-    save_histograms(df, "histogram")
+def narrate_story(analysis, charts, filename):
+    """Use GPT-4o-Mini to narrate a story about the analysis."""
+    summary_prompt = f"""
+    I analyzed a dataset from {filename}. It has the following details:
+    - Shape: {analysis['shape']}
+    - Columns: {analysis['columns']}
+    - Missing Values: {analysis['missing_values']}
+    - Summary Statistics: {analysis['summary_statistics']}
 
-    # LLM analysis prompts
-    column_info = df.dtypes.to_string()
-    sample_values = df.head(5).to_string()
-
-    prompt = f"""
-    You are analyzing a dataset with the following characteristics:
-    - Columns and their data types:
-    {column_info}
-    - Sample data:
-    {sample_values}
-    - Summary statistics:
-    {basic_stats}
-    - Missing values per column:
-    {missing_values}
-    - Unique values per column:
-    {unique_values}
-
-    Based on this information:
-    1. Summarize the dataset.
-    2. Suggest and describe interesting analyses that can be performed.
+    Write a short summary of the dataset, key insights, and recommendations. Refer to the charts where necessary.
     """
+    url = f"{api_proxy_base_url}/chat/completions"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_proxy_token}"
+    }
+    data = {
+        "model": "gpt-4o-mini",
+        "messages": [{"role": "user", "content": summary_prompt}],
+        "temperature": 0.7
+    }
 
-    summary = call_llm(prompt)
+    try:
+        response = requests.post(url, headers=headers, json=data)
+        response.raise_for_status()
+        result = response.json()
+        return result["choices"][0]["message"]["content"]
+    except requests.exceptions.RequestException as e:
+        return f"Story generation failed: {e}"
 
-    # Write narrative to README.md
-    with open("README.md", "w") as readme:
-        readme.write("# Automated Analysis Report\n\n")
-        readme.write("## Dataset Summary\n")
-        readme.write(summary + "\n")
-        readme.write("\n## Visualizations\n")
-        readme.write("![Correlation Heatmap](correlation_heatmap.png)\n")
-        for column in df.select_dtypes(include=np.number).columns:
-            readme.write(f"![Histogram of {column}](histogram_{column}.png)\n")
+def save_markdown(story, charts, output_file):
+    """Save the narrated story and chart references to a README.md file."""
+    with open(output_file, "w") as f:
+        f.write("# Analysis Report\n\n")
+        f.write(story + "\n\n")
+        for chart in charts:
+            f.write(f"![Chart](./{chart})\n")
+
+def main():
+    # Change to the specified folder
+    try:
+        os.chdir(folder_path)
+    except Exception as e:
+        print(f"Error accessing folder {folder_path}: {e}")
+        return
+    
+    # Automatically process all CSV files in the folder
+    csv_files = [f for f in os.listdir() if f.endswith('.csv')]
+    
+    if not csv_files:
+        print("No CSV files found in the directory.")
+        return
+    
+    for filename in csv_files:
+        print(f"Processing {filename}...")
+
+        # Load dataset
+        df = read_csv(filename)
+        
+        # Analyze dataset
+        analysis = analyze_data(df)
+        
+        # Visualize data
+        output_prefix = filename.split(".")[0]
+        charts = visualize_data(df, output_prefix)
+        
+        # Narrate story
+        story = narrate_story(analysis, charts, filename)
+        
+        # Save README.md
+        readme_file = f"README_{output_prefix}.md"
+        save_markdown(story, charts, readme_file)
+        print(f"Analysis completed for {filename}. Check {readme_file} and charts.")
+
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print("Usage: uv run autolysis.py <dataset.csv>")
-        sys.exit(1)
-
-    dataset_file = sys.argv[1]
-    analyze_dataset(dataset_file)
-
+    main()
