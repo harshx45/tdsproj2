@@ -1,5 +1,7 @@
 import os
 import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
 import requests
 import json
 import seaborn
@@ -12,7 +14,7 @@ from datetime import datetime
 
 # Prompt the user for their API token and the folder location
 # Hardcode the API token and folder path
-api_proxy_token = "Token"
+api_proxy_token = "token"
 folder_path = r"paTH"
 
 
